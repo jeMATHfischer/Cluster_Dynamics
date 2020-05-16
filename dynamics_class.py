@@ -1,14 +1,13 @@
 import numpy as np
 import networkx as nx
 from agent_class import agent
-from cluster_class import cluster
-import matplotlib.pyplot as plt
+#from cluster_class import cluster
 #from edge_class import edge
 import random
 
 class dynamics():
     
-    def __init__(self, population_size,  labels, network, theta, mu,p):
+    def __init__(self, population_size,  labels, network, theta, mu,p, with_flip = 1):
         self.population_size = population_size
         self.labels = labels
         self.population = [agent(i,labels[i],list(nx.neighbors(network,i)),-1) for i in range(population_size)]
@@ -17,9 +16,11 @@ class dynamics():
         self.mu = mu
         self.p = p
         self.clusters = []
-        self.remaining_cluster_labels = list(range(1,population_size+1))
         self.existing_cluster_labels = []
+        self.cluster_references = []
         self.t = 0
+        self.cluster_changes = []
+        self.with_flip = with_flip
 
     def cluster_setup(self):
         '''
@@ -31,6 +32,7 @@ class dynamics():
         then yield the confidence clusters. The loop simply sets the label for each individual agent in each
         connected component.
         '''
+        allowed_cluster_label = 1
         Void = nx.empty_graph(self.population_size)
         short_edges = [edge for edge in self.network.edges() if 
                        abs(self.population[edge[0]].opinion-self.population[edge[1]].opinion) < self.theta]
@@ -38,16 +40,12 @@ class dynamics():
         representatives = self.population.copy()
         while len(representatives) > 0:
             agent_x = random.choice(representatives)
-            label = random.choice(self.remaining_cluster_labels)
             agent_x_adjoints = [self.population[i] for i in Void.nodes() if nx.has_path(Void,agent_x.name, i)]
             for agent_a in agent_x_adjoints:
-                agent_a.cluster = label
+                agent_a.cluster = allowed_cluster_label
                 representatives.remove(agent_a)
-            
-            self.remaining_cluster_labels.remove(label)
-            self.existing_cluster_labels.append(label)
-        print('cluster setup')
-        print(self.remaining_cluster_labels)
+            self.existing_cluster_labels.append(allowed_cluster_label)
+            allowed_cluster_label += 1
                     
     def get_cluster(self):
         '''
@@ -74,12 +72,9 @@ class dynamics():
         setup but now we are only considering the network spanned within each cluster. Hence
         small void. The remaining part works identical to the cluster setup function.        
         '''
-        self.existing_cluster_labels.remove(label)
-        self.remaining_cluster_labels.append(label)
         concerned_agents = []
         for agent_a in self.population:
             if agent_a.cluster == label:
-                agent_a.cluster = -1
                 concerned_agents.append(agent_a.name)
         small_void = nx.empty_graph(len(concerned_agents))
         node_names = dict(zip(list(range(len(concerned_agents))), concerned_agents))
@@ -87,16 +82,19 @@ class dynamics():
         natural_edges = [edges for edges in self.network.edges() if 
                          edges[0] in concerned_agents and edges[1] in concerned_agents and abs(self.population[edges[0]].opinion-self.population[edges[1]].opinion) < self.theta]
         small_void.add_edges_from(natural_edges)
-        representatives = [self.population[i] for i in concerned_agents]
-        while len(representatives) > 0:            
-            agent_x = random.choice(representatives)
-            label_new = random.choice(self.remaining_cluster_labels)
-            agent_x_adjoints = [self.population[i] for i in small_void.nodes() if nx.has_path(small_void,agent_x.name, i)]
-            for agent_a in agent_x_adjoints:
-                agent_a.cluster = label_new
-                representatives.remove(agent_a)
-            self.remaining_cluster_labels.remove(label_new)
-            self.existing_cluster_labels.append(label_new)
+        if len(list(nx.connected_components(small_void))) > 1:
+            representatives = [self.population[i] for i in concerned_agents]
+            while len(representatives) > 0:            
+                agent_x = random.choice(representatives)
+                label_new = self.existing_cluster_labels[-1] + 1
+                agent_x_adjoints = [self.population[i] for i in small_void.nodes() if nx.has_path(small_void,agent_x.name, i)]
+                for agent_a in agent_x_adjoints:
+                    agent_a.cluster = label_new
+                    representatives.remove(agent_a)
+                self.existing_cluster_labels.append(label_new)
+                self.cluster_references.append((label, label_new))
+                
+            self.existing_cluster_labels.remove(label)
         
     def combine_clusters(self, label_a, label_b):
         '''
@@ -107,15 +105,22 @@ class dynamics():
         Therefore, we throw out the old cluster label and assign a new one identical
         for each agent within the combined cluster.
         '''
-        self.existing_cluster_labels.remove(label_a)
-        self.existing_cluster_labels.remove(label_b)
-        self.remaining_cluster_labels = self.remaining_cluster_labels + [label_a,label_b]
-        label_new = random.choice(self.remaining_cluster_labels)
+        label_new = self.existing_cluster_labels[-1] + 1
         for agent_a in self.population:
             if agent_a.cluster == label_a or agent_a.cluster == label_b:
                 agent_a.cluster = label_new
         self.existing_cluster_labels.append(label_new)
-        self.remaining_cluster_labels.remove(label_new)
+        self.existing_cluster_labels.remove(label_a)
+        self.existing_cluster_labels.remove(label_b)
+        self.cluster_references.append(((label_a, label_b), label_new))
+        
+    def find_cluster_size(self, cluster_label):
+        '''
+        Derive the diameter of a cluster based on its label
+        '''
+        candidates = [agent.opinion for agent in self.population if agent.cluster == cluster_label]
+        return max(candidates)-min(candidates)
+        
         
     
     def time_evolution(self, final_time):
@@ -125,32 +130,40 @@ class dynamics():
         the paper.
         '''
         while self.t < final_time:
+            num_cluster_at_t_m_one = len(self.existing_cluster_labels)
 #            tester = len(self.existing_cluster_labels)
             e = random.choice(list(self.network.edges()))
             if abs(self.population[e[0]].opinion - self.population[e[1]].opinion) < self.theta:
                 self.adjust_labels(self.population[e[0]], self.population[e[1]])
                 self.split_cluster(self.population[e[0]].cluster)
-            else:
+            elif self.with_flip == 1:
                 c2 = np.random.binomial(1,0.5)
-                while True: 
-                    x = random.choice(list(self.network.nodes()))
-                    if (x,e[c2]) not in self.network.edges():
-            #                 G.add_edge(x,rm[0])
-                        break
                 c1 = np.random.binomial(1,self.p)
                 if c1 == 1:
                     self.network.remove_edge(e[0],e[1])
+                edges = list(self.network.edges())
+                nodes = list(self.network.nodes())
+                find_non_neighbor = [agent for agent in nodes if (agent,e[c2]) not in edges]
+                x = random.choice(find_non_neighbor)
+                
+                if c1 == 1:
                     self.network.add_edge(x,e[c2]) 
                     if abs(self.population[x].opinion-self.population[e[c2]].opinion) < self.theta and self.population[x].cluster != self.population[e[c2]].cluster:
                         self.combine_clusters(self.population[x].cluster, self.population[e[c2]].cluster)
                         
-#            if tester != len(self.existing_cluster_labels):
-#                print(self.get_cluster())
-            self.t += 1
+            if len(self.existing_cluster_labels) != num_cluster_at_t_m_one:
+                self.cluster_changes.append((self.existing_cluster_labels.copy(), [agent.opinion for agent in self.population],self.t))
             
-#        print(self.get_cluster())
-#        print([agent.opinion for agent in self.population])
-#            
+            test = [(self.find_cluster_size(cluster) < self.theta) for cluster in self.existing_cluster_labels]
+            
+            if np.prod(test) == 1:
+#                print('break')
+                break
+            
+            self.t += 1
+#            if self.t%100 ==0:
+#                print(self.t)
+            
         
         
         
