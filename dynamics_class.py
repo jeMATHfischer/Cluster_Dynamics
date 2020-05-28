@@ -11,10 +11,11 @@ class dynamics():
         self.population_size = population_size
         self.labels = labels
         self.population = [agent(i,labels[i],list(nx.neighbors(network,i)),-1) for i in range(population_size)]
-        self.network = network
+        self.network = network.copy()
         self.theta = theta
         self.mu = mu
         self.p = p
+        self.num_long_edges = []
         self.clusters = []
         self.existing_cluster_labels = []
         self.cluster_references = []
@@ -46,7 +47,12 @@ class dynamics():
                 representatives.remove(agent_a)
             self.existing_cluster_labels.append(allowed_cluster_label)
             allowed_cluster_label += 1
-                    
+        edges = list(self.network.edges())            
+        self.num_long_edges.append(len([edge for edge in edges if abs(self.population[edge[0]].opinion-self.population[edge[1]].opinion) >= self.theta ]))
+        
+        self.cluster_changes.append((self.existing_cluster_labels.copy(), [(agent.opinion, agent.cluster) for agent in self.population],self.t))
+        
+        
     def get_cluster(self):
         '''
         This function allows to display all clusters as sets of the contained 
@@ -130,6 +136,7 @@ class dynamics():
         the paper.
         '''
         while self.t < final_time:
+            self.t += 1
             num_cluster_at_t_m_one = len(self.existing_cluster_labels)
 #            tester = len(self.existing_cluster_labels)
             e = random.choice(list(self.network.edges()))
@@ -152,15 +159,19 @@ class dynamics():
                         self.combine_clusters(self.population[x].cluster, self.population[e[c2]].cluster)
                         
             if len(self.existing_cluster_labels) != num_cluster_at_t_m_one:
-                self.cluster_changes.append((self.existing_cluster_labels.copy(), [agent.opinion for agent in self.population],self.t))
+                self.cluster_changes.append((self.existing_cluster_labels.copy(), [(agent.opinion, agent.cluster) for agent in self.population],self.t))
+            
+            edges = list(self.network.edges())            
+            self.num_long_edges.append(len([edge for edge in edges if abs(self.population[edge[0]].opinion-self.population[edge[1]].opinion) >= self.theta ]))
             
             test = [(self.find_cluster_size(cluster) < self.theta) for cluster in self.existing_cluster_labels]
             
             if np.prod(test) == 1:
+                if self.with_flip == 1 and self.num_long_edges[-1] == 0:
+                    break
+                else:
 #                print('break')
-                break
-            
-            self.t += 1
+                    break
 #            if self.t%100 ==0:
 #                print(self.t)
             
